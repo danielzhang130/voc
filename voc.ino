@@ -5,6 +5,8 @@
 
 Adafruit_SGP40 sgp;
 
+#define INPUT_PIN_INT   2
+
 // target 2mhz clock
 #define CLK_PRESCALE_FACTOR 4
 #define CLK_PRESCALE_HEX 0x02
@@ -25,16 +27,26 @@ byte num[10][7] = {
   {1, 1, 1, 1, 0, 1, 1}
 };
 
-void showNumber(byte v, boolean showLeading = false);
+void showNumber(byte v, bool showLeading = false);
+
+bool should_display = true;
+
+void isr(void)
+{
+  should_display = true;
+}
 
 void setup(void)
 {
   Serial.begin(9600);
   
-  while (! sgp.begin()){
+  while (!sgp.begin()){
     Serial.println("Sensor not found :(");
     delay(10);
   }
+  
+  pinMode(INPUT_PIN_INT, INPUT);
+  attachInterrupt(digitalPinToInterrupt(INPUT_PIN_INT), isr, RISING);
   
   for (byte i = 0; i < 7; ++i)
   {
@@ -52,7 +64,7 @@ void setup(void)
   CLKPR = CLK_PRESCALE_HEX;
 }
 
-void print7(byte c, boolean showLeading = false)
+void print7(byte c, bool showLeading = false)
 {
   byte a, b;
 
@@ -119,7 +131,7 @@ void clear(void)
   digitalWrite(13, 0);
 }
 
-void showNumber(byte v, boolean showLeading)
+void showNumber(byte v, bool showLeading)
 {
   unsigned long time = millis();
   
@@ -134,27 +146,50 @@ void showNumber(byte v, boolean showLeading)
       delay(10 / CLK_PRESCALE_FACTOR);
   }
 }
-byte v;
+
+void display(uint16_t raw)
+{
+  if (should_display) {
+    should_display = false;
+   
+    if (raw > 99)
+    {
+     showNumber(raw/100);
+     showNumber(raw%100, true); 
+    }
+    else
+    {
+      showNumber(raw);
+    }
+  
+    clear();
+  }
+}
+
+uint16_t raw = 0;
+int32_t index = 0;
+
 void loop(void)
 {
-  uint16_t raw;
-  
-  raw = sgp.measureVocIndex();
-
-  Serial.print("Measurement: ");
-  Serial.println(raw);
-
-  if (raw > 99)
-  {
-   showNumber(raw/100);
-   showNumber(raw%100, true); 
-  }
-  else
-  {
-    showNumber(raw);
-  }
-
-  clear();
-  
+  sgp.measureRaw();
+  index = sgp.updateVocIndex(raw);
+  display(index);
   LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_OFF);
+  
+  for (int i = 0; i < 4; ++i)
+  {
+    raw = sgp.measureRaw();
+    index = sgp.updateVocIndex(raw);
+    display(index);
+    LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_OFF);
+  }
+
+  sgp.heaterOff();
+  
+  for (int i = 0; i < 45; ++i)
+  {
+    index = sgp.updateVocIndex(raw);
+    display(index);
+    LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_OFF);
+  }
 }
