@@ -1,15 +1,11 @@
 #include <LowPower.h>
 #include <Wire.h>
-#include <Adafruit_Sensor.h>
-#include "Adafruit_SGP40.h"
+#include "SensirionI2CScd4x.h"
+#include <Arduino.h>
 
-Adafruit_SGP40 sgp;
+SensirionI2CScd4x scd4x;
 
 #define INPUT_PIN_INT   2
-
-// target 2mhz clock
-#define CLK_PRESCALE_FACTOR 4
-#define CLK_PRESCALE_HEX 0x02
 
 volatile byte count = 255;
 byte digits[] = {12, 13};
@@ -30,21 +26,25 @@ byte num[10][7] = {
 void showNumber(byte v, bool showLeading = false);
 
 bool should_display = true;
+long prev_isr;
 
 void isr(void)
 {
+  if (millis() - prev_isr < 300) return;
+  
   should_display = true;
+  prev_isr = millis();
 }
 
 void setup(void)
 {
-  Serial.begin(9600);
-  
-  while (!sgp.begin()){
-    Serial.println("Sensor not found :(");
-    delay(10);
-  }
-  
+  Serial.begin(115200);
+
+  Wire.begin();
+
+  scd4x.begin(Wire);
+  scd4x.stopPeriodicMeasurement();
+
   pinMode(INPUT_PIN_INT, INPUT);
   attachInterrupt(digitalPinToInterrupt(INPUT_PIN_INT), isr, RISING);
   
@@ -58,10 +58,6 @@ void setup(void)
 
   // set ADC reference to 1.1v
   analogReference(INTERNAL);
-
-  // slow down clock
-  CLKPR = 0x80;
-  CLKPR = CLK_PRESCALE_HEX;
 }
 
 void print7(byte c, bool showLeading = false)
@@ -78,7 +74,7 @@ void print7(byte c, bool showLeading = false)
       digitalWrite(segments[i], num[a][i]);
     }
     digitalWrite(digits[1], 0);
-    delay(5 / CLK_PRESCALE_FACTOR);
+    delay(5);
     digitalWrite(digits[1], 1);
   
     for (byte i = 0; i < 7; ++i)
@@ -86,7 +82,7 @@ void print7(byte c, bool showLeading = false)
       digitalWrite(segments[i], num[b][i]);
     }
     digitalWrite(digits[0], 0);
-    delay(5 / CLK_PRESCALE_FACTOR);
+    delay(5);
     digitalWrite(digits[0], 1);
   }
   else
@@ -98,7 +94,7 @@ void print7(byte c, bool showLeading = false)
         digitalWrite(segments[i], num[0][i]);
       }
       digitalWrite(digits[1], 0);
-      delay(5 / CLK_PRESCALE_FACTOR);
+      delay(5);
       digitalWrite(digits[1], 1);
     }
     else
@@ -108,7 +104,7 @@ void print7(byte c, bool showLeading = false)
         digitalWrite(segments[i], 0);
       }
       digitalWrite(digits[1], 0);
-      delay(5 / CLK_PRESCALE_FACTOR);
+      delay(5);
       digitalWrite(digits[1], 1);
     }
 
@@ -117,7 +113,7 @@ void print7(byte c, bool showLeading = false)
       digitalWrite(segments[i], num[c][i]);
     }
     digitalWrite(digits[0], 0);
-    delay(5 / CLK_PRESCALE_FACTOR);
+    delay(5);
     digitalWrite(digits[0], 1);
   }
 }
@@ -135,17 +131,21 @@ void showNumber(byte v, bool showLeading)
 {
   unsigned long time = millis();
   
-  Serial.println(v);
   while (1)
   {
       print7(v, showLeading);
-      if (millis() - time > 1000 / CLK_PRESCALE_FACTOR)
+      if (millis() - time > 1000)
       {
         break;
       }
-      delay(10 / CLK_PRESCALE_FACTOR);
+      delay(10);
   }
 }
+
+uint16_t co2;
+float temperature;
+float humidity;
+uint16_t ready;
 
 void display(uint16_t raw)
 {
@@ -161,35 +161,40 @@ void display(uint16_t raw)
     {
       showNumber(raw);
     }
+
+    display((uint16_t) temperature);
   
     clear();
   }
 }
 
-uint16_t raw = 0;
-int32_t index = 0;
+void sleep(void)
+{
+  for(int i = 0; i < 22; ++i)
+  {
+    LowPower.powerDown(SLEEP_8S, ADC_OFF, BOD_OFF);
+    display(co2);
+  }
+}
 
 void loop(void)
 {
-  sgp.measureRaw();
-  index = sgp.updateVocIndex(raw);
-  display(index);
-  LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_OFF);
+  scd4x.wakeUp();
   
-  for (int i = 0; i < 4; ++i)
-  {
-    raw = sgp.measureRaw();
-    index = sgp.updateVocIndex(raw);
-    display(index);
+  scd4x.measureSingleShot();
+
+  scd4x.getDataReadyStatus(ready);
+  while((ready & 0x07FF) == 0) {
     LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_OFF);
+    display(co2);
+    scd4x.getDataReadyStatus(ready);
   }
 
-  sgp.heaterOff();
+  scd4x.readMeasurement(co2, temperature, humidity);
+
+  scd4x.powerDown();
+
+  display(co2);
   
-  for (int i = 0; i < 45; ++i)
-  {
-    index = sgp.updateVocIndex(raw);
-    display(index);
-    LowPower.powerDown(SLEEP_1S, ADC_OFF, BOD_OFF);
-  }
+  sleep();
 }
